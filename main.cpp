@@ -3,6 +3,7 @@
 #include <linux/string.h>
 #include <unistd.h>
 #include <cups/cups.h>
+#include <curl/curl.h>
 using namespace std;
 
 char * mac_add = NULL;
@@ -61,11 +62,123 @@ bool issue_mac_command(char * command)
     return true;
 }
 
+static int wait_on_socket(curl_socket_t sockfd, int for_recv, long timeout_ms)
+{
+    struct timeval tv;
+    fd_set infd, outfd, errfd;
+    int res;
+
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec= (timeout_ms % 1000) * 1000;
+
+    FD_ZERO(&infd);
+    FD_ZERO(&outfd);
+    FD_ZERO(&errfd);
+
+    FD_SET(sockfd, &errfd); /* always check for error */
+
+    if(for_recv)
+    {
+        FD_SET(sockfd, &infd);
+    }
+    else
+    {
+        FD_SET(sockfd, &outfd);
+    }
+
+    /* select() returns the number of signalled sockets or -1 */
+    res = select(sockfd + 1, &infd, &outfd, &errfd, &tv);
+    return res;
+}
+
+
 int main(int argc, char **argv) {
-    printf(" >> starting ..\n");
+    puts(" >> starting ..");
 
     char *command;
     FILE * pFile;
+
+
+    CURL *curl;
+    CURLcode res;
+    /* Minimalistic http request */
+    const char *request = "GET / HTTP/1.0\r\nHost: www.cnn.com\r\n\r\n";
+    curl_socket_t sockfd; /* socket */
+    long sockextr;
+    size_t iolen;
+    curl_off_t nread;
+    curl = curl_easy_init();
+    if(curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, "http://www.cnn.com");
+        /* only connect to host */
+        curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 1L);
+        res = curl_easy_perform(curl);
+
+        if(CURLE_OK != res)
+        {
+            printf(" *** Error: %s *** \n", strerror(res));
+            return 1;
+        }
+
+        res = curl_easy_getinfo(curl, CURLINFO_LASTSOCKET, &sockextr);
+
+        if(CURLE_OK != res)
+        {
+            printf(" *** Error: %s *** \n", curl_easy_strerror(res));
+            return 1;
+        }
+
+        sockfd = sockextr;
+
+        /* wait for the socket to become ready for sending */
+        if(!wait_on_socket(sockfd, 0, 6000L))
+        {
+            printf(" *** Error: socket timeout. ***\n");
+            return 1;
+        }
+
+        puts("  Sending request.");
+        /* Send the request. Real applications should check the iolen
+         * to see if all the request has been sent */
+        res = curl_easy_send(curl, request, strlen(request), &iolen);
+
+        if(CURLE_OK != res)
+        {
+            printf(" *** Error: %s *** \n", curl_easy_strerror(res));
+            return 1;
+        }
+        puts("  Reading response.");
+
+        /* read the response */
+        for(;;)
+        {
+            char buf[1024];
+
+            wait_on_socket(sockfd, 1, 60000L);
+            res = curl_easy_recv(curl, buf, 1024, &iolen);
+
+            if(CURLE_OK != res)
+                break;
+
+            nread = (curl_off_t)iolen;
+
+            printf("Received %" CURL_FORMAT_CURL_OFF_T " bytes.\n", nread);
+        }
+
+        /* always cleanup */
+        curl_easy_cleanup(curl);
+    }
+
+
+
+
+    /// code stops here
+    return 0;
+
+
+
+
+
 
     system("adb shell 'echo \"halt\" > /sys/power/wake_lock'");
 
@@ -456,6 +569,6 @@ int main(int argc, char **argv) {
     if (mac_add)
         free(mac_add);
 
-    printf(" << exiting ..\n");
+    puts(" << exiting ..");
     return 0;
 }
