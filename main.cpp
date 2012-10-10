@@ -62,123 +62,46 @@ bool issue_mac_command(char * command)
     return true;
 }
 
-static int wait_on_socket(curl_socket_t sockfd, int for_recv, long timeout_ms)
+struct MemoryStruct {
+    char *memory;
+    size_t size;
+};
+
+static size_t
+WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp)
 {
-    struct timeval tv;
-    fd_set infd, outfd, errfd;
-    int res;
+    size_t realsize = size * nmemb;
+    struct MemoryStruct *mem = (struct MemoryStruct *)userp;
 
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec= (timeout_ms % 1000) * 1000;
-
-    FD_ZERO(&infd);
-    FD_ZERO(&outfd);
-    FD_ZERO(&errfd);
-
-    FD_SET(sockfd, &errfd); /* always check for error */
-
-    if(for_recv)
-    {
-        FD_SET(sockfd, &infd);
-    }
-    else
-    {
-        FD_SET(sockfd, &outfd);
+    mem->memory = (char*)realloc(mem->memory, mem->size + realsize + 1);
+    if (mem->memory == NULL) {
+        /* out of memory! */
+        printf("not enough memory (realloc returned NULL)\n");
+        exit(EXIT_FAILURE);
     }
 
-    /* select() returns the number of signalled sockets or -1 */
-    res = select(sockfd + 1, &infd, &outfd, &errfd, &tv);
-    return res;
+    memcpy(&(mem->memory[mem->size]), contents, realsize);
+    mem->size += realsize;
+    mem->memory[mem->size] = 0;
+
+    return realsize;
 }
-
 
 int main(int argc, char **argv) {
     puts(" >> starting ..");
 
+    char *serialno;
     char *command;
     FILE * pFile;
 
-
+    char* response;
+    char *postrequest;
     CURL *curl;
     CURLcode res;
-    /* Minimalistic http request */
-    const char *request = "GET / HTTP/1.0\r\nHost: www.cnn.com\r\n\r\n";
-    curl_socket_t sockfd; /* socket */
-    long sockextr;
-    size_t iolen;
-    curl_off_t nread;
-    curl = curl_easy_init();
-    if(curl) {
-        curl_easy_setopt(curl, CURLOPT_URL, "http://www.cnn.com");
-        /* only connect to host */
-        curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 1L);
-        res = curl_easy_perform(curl);
+    struct MemoryStruct chunk;
 
-        if(CURLE_OK != res)
-        {
-            printf(" *** Error: %s *** \n", strerror(res));
-            return 1;
-        }
-
-        res = curl_easy_getinfo(curl, CURLINFO_LASTSOCKET, &sockextr);
-
-        if(CURLE_OK != res)
-        {
-            printf(" *** Error: %s *** \n", curl_easy_strerror(res));
-            return 1;
-        }
-
-        sockfd = sockextr;
-
-        /* wait for the socket to become ready for sending */
-        if(!wait_on_socket(sockfd, 0, 6000L))
-        {
-            printf(" *** Error: socket timeout. ***\n");
-            return 1;
-        }
-
-        puts("  Sending request.");
-        /* Send the request. Real applications should check the iolen
-         * to see if all the request has been sent */
-        res = curl_easy_send(curl, request, strlen(request), &iolen);
-
-        if(CURLE_OK != res)
-        {
-            printf(" *** Error: %s *** \n", curl_easy_strerror(res));
-            return 1;
-        }
-        puts("  Reading response.");
-
-        /* read the response */
-        for(;;)
-        {
-            char buf[1024];
-
-            wait_on_socket(sockfd, 1, 60000L);
-            res = curl_easy_recv(curl, buf, 1024, &iolen);
-
-            if(CURLE_OK != res)
-                break;
-
-            nread = (curl_off_t)iolen;
-
-            printf("Received %" CURL_FORMAT_CURL_OFF_T " bytes.\n", nread);
-        }
-
-        /* always cleanup */
-        curl_easy_cleanup(curl);
-    }
-
-
-
-
-    /// code stops here
-    return 0;
-
-
-
-
-
+    chunk.memory = (char*)malloc(1);
+    chunk.size = 0;
 
     system("adb shell 'echo \"halt\" > /sys/power/wake_lock'");
 
@@ -192,6 +115,144 @@ int main(int argc, char **argv) {
         return -1;
     }
     free(command);
+
+    asprintf(&postrequest, "%s%s", "clientid=ubislate&clientkey=d@t@w1nd&action=getserialid&macid=", mac_add);
+    curl_global_init(CURL_GLOBAL_ALL);
+    curl = curl_easy_init();
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, "https://support.datawind-s.com/progserver/touchrequest.jsp");
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postrequest);
+
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, WriteMemoryCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEHEADER, (void *)&chunk);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "libcurl-agent/1.0");
+
+        res = curl_easy_perform(curl);
+
+        if (res != CURLE_OK) {
+            printf("failed to connect to server %s\n", curl_easy_strerror(res));
+            curl_easy_cleanup(curl);
+            curl_global_cleanup();
+
+            if (chunk.memory)
+                free(chunk.memory);
+            return -1;
+        }
+        printf("%lu bytes retrieved\n", (long)chunk.size);
+        printf("recieved:%s\n", chunk.memory);
+        asprintf(&response,"%s",chunk.memory);
+        char * pdw_messageStart = strstr(response, "dw-message:");
+        if (pdw_messageStart != NULL) {
+            char * pdw_messageEnd = strstr(pdw_messageStart + 0x0c, "\r\n");
+            if (pdw_messageEnd != NULL) {
+                char *dw_message = (char*) malloc(strlen(pdw_messageStart) - strlen(pdw_messageEnd));
+
+                if (dw_message != NULL) {
+                    memset(dw_message,0, strlen(pdw_messageStart) - strlen(pdw_messageEnd));
+                    strncpy(dw_message, pdw_messageStart + 0x0c, strlen(pdw_messageStart) - strlen(pdw_messageEnd) - 0x0c );
+                    if (strcmp(dw_message, "Success.")== 0) {
+                        char * pdw_serialNoStart = strstr(pdw_messageEnd+ 0x2, "dw-serialid:");
+                        if(pdw_serialNoStart != NULL){
+                            char * pdw_serialNoEnd = strstr(pdw_serialNoStart + 0x0d, "\r\n");
+                            if(pdw_serialNoEnd != NULL){
+                                char* dw_serialno = (char*) malloc(strlen(pdw_serialNoStart) - strlen(pdw_serialNoEnd));
+                                if (dw_serialno != NULL) {
+                                    memset(dw_serialno,0, strlen(pdw_serialNoStart) - strlen(pdw_serialNoEnd));
+                                    strncpy(dw_serialno, pdw_serialNoStart + 0x0d, strlen(pdw_serialNoStart) - strlen(pdw_serialNoEnd) - 0x0d );
+                                    asprintf(&serialno,"%s",dw_serialno);
+                                    free(dw_serialno);
+                                }else{
+                                    printf("wrong server response\n %s\n",response);
+                                    curl_easy_cleanup(curl);
+                                    curl_global_cleanup();
+
+                                    if (chunk.memory)
+                                        free(chunk.memory);
+                                    return -1;
+                                }
+                            }else{
+                                printf("wrong server response\n %s\n",response);
+                                curl_easy_cleanup(curl);
+                                curl_global_cleanup();
+
+                                if (chunk.memory)
+                                    free(chunk.memory);
+                                return -1;
+                            }
+
+                        }else{
+                            printf("wrong server response\n %s\n", response);
+                            curl_easy_cleanup(curl);
+                            curl_global_cleanup();
+
+                            if (chunk.memory)
+                                free(chunk.memory);
+                            return -1;
+                        }
+
+                    } else {
+                        /* we got error from the server */
+                        printf(" *** %s *** \n\n", dw_message);
+                        free(dw_message);
+                        curl_easy_cleanup(curl);
+                        curl_global_cleanup();
+
+                        if (chunk.memory)
+                            free(chunk.memory);
+                        return -1;
+                    }
+
+                    free(dw_message);
+                }else{
+                    printf("wrong server response\n %s\n", response);
+                    curl_easy_cleanup(curl);
+                    curl_global_cleanup();
+
+                    if (chunk.memory)
+                        free(chunk.memory);
+                    return -1;
+                }
+            } else {
+                printf("wrong server response\n %s\n", response);
+                curl_easy_cleanup(curl);
+                curl_global_cleanup();
+
+                if (chunk.memory)
+                    free(chunk.memory);
+                return -1;
+            }
+
+        } else {
+            printf("wrong server response\n %s\n", response);
+            curl_easy_cleanup(curl);
+            curl_global_cleanup();
+
+            if (chunk.memory)
+                free(chunk.memory);
+            return -1;
+        }
+
+        curl_easy_cleanup(curl);
+
+    } else {
+        printf("failed to connect to server\n %s\n", response);
+        curl_global_cleanup();
+        if (chunk.memory)
+            free(chunk.memory);
+        return -1;
+    }
+    curl_global_cleanup();
+
+    if (chunk.memory)
+        free(chunk.memory);
+
+    if(serialno == NULL){
+        printf(" *** failed to get serial number from server *** \n");
+        return -1;
+    }
+    printf("serialno:%s\n", serialno);
+    /// code stops here
+    return 0;
 
 //     pFile = fopen ("./macs.html","w");
 //     if (pFile!=NULL)
