@@ -23,8 +23,9 @@ bool issue_adb_command(char * command)
 
     while ( fgets( line, sizeof line, fpipe))
     {
-        if (strlen(line) > 0 && strstr(command,"push") == NULL && strstr(command,"am broadcast") == NULL) {
+        if (strlen(line) > 0 && strstr(command,"push") == NULL && strstr(command,"am broadcast") == NULL && strstr(command,"rm /databk/data_backup.tar") == NULL) {
             printf("\n *** Error please note down the message below *** 4 %s\n",command);
+            return false;
         }
         printf("%s", line);
 
@@ -32,6 +33,33 @@ bool issue_adb_command(char * command)
     pclose(fpipe);
 
     return true;
+}
+
+bool issue_split_command(char * command)
+{
+    FILE *fpipe;
+    char line[256];
+    bool krnl_extract_problm = true;
+
+    memset(line,0, sizeof line);
+    //printf("now executing command %s\n", command);
+    if ( !(fpipe = (FILE*)popen(command,"r")) )
+    {  // If fpipe is NULL
+        printf("Problems with adb shell command 4 %s\n", command);
+        return false;
+    }
+
+    while ( fgets( line, sizeof line, fpipe))
+    {
+        if (strlen(line) > 0 && strstr(line,"Writing nandc.img-kernel ... complete.") != NULL) {
+            pclose(fpipe);
+            return true;
+        } else {
+            krnl_extract_problm = false;
+        }
+    }
+    pclose(fpipe);
+    return krnl_extract_problm;
 }
 
 
@@ -105,6 +133,39 @@ int main(int argc, char **argv) {
 
     system("adb shell 'echo \"halt\" > /sys/power/wake_lock'");
 
+    if (asprintf(&command, "%s", "adb shell 'cat /dev/block/nandc > /mnt/sdcard/nandc.img'") < 0) {
+        printf("Problems allocating adb command @ %d\n", __LINE__);
+        return -1;
+    }
+    if (!issue_adb_command(command)) {
+        printf("issue_adb_command issue command @ %d\n", __LINE__);
+        return -1;
+    }
+    free(command);
+
+
+    if (asprintf(&command, "%s", "adb pull /mnt/sdcard/nandc.img") < 0) {
+        printf("Problems allocating adb command @ %d\n", __LINE__);
+        return -1;
+    }
+    if (!issue_adb_command(command)) {
+        printf("issue_adb_command issue command @ %d\n", __LINE__);
+        return -1;
+    }
+    free(command);
+
+
+    if (asprintf(&command, "%s", "./split_bootimg.pl nandc.img") < 0) {
+        printf("Problems allocating adb command @ %d\n", __LINE__);
+        return -1;
+    }
+    if (!issue_split_command(command)) {
+        printf("Programming has to stop .. @ %d\n", __LINE__);
+        return -1;
+    }
+    free(command);
+
+
     printf("now checking wifi MAC\n");
     if (asprintf(&command, "%s", "adb shell netcfg | grep wlan0") < 0) {
         printf("Problems allocating adb command @ %d\n", __LINE__);
@@ -139,7 +200,7 @@ int main(int argc, char **argv) {
             return -1;
         }
         printf("%lu bytes retrieved\n", (long)chunk.size);
-        printf("recieved:%s\n", chunk.memory);
+//         printf("recieved:%s\n", chunk.memory);
         asprintf(&response,"%s",chunk.memory);
         char * pdw_messageStart = strstr(response, "dw-message:");
         if (pdw_messageStart != NULL) {
@@ -152,16 +213,17 @@ int main(int argc, char **argv) {
                     strncpy(dw_message, pdw_messageStart + 0x0c, strlen(pdw_messageStart) - strlen(pdw_messageEnd) - 0x0c );
                     if (strcmp(dw_message, "Success.")== 0) {
                         char * pdw_serialNoStart = strstr(pdw_messageEnd+ 0x2, "dw-serialid:");
-                        if(pdw_serialNoStart != NULL){
+                        if (pdw_serialNoStart != NULL) {
                             char * pdw_serialNoEnd = strstr(pdw_serialNoStart + 0x0d, "\r\n");
-                            if(pdw_serialNoEnd != NULL){
+                            if (pdw_serialNoEnd != NULL) {
                                 char* dw_serialno = (char*) malloc(strlen(pdw_serialNoStart) - strlen(pdw_serialNoEnd));
                                 if (dw_serialno != NULL) {
                                     memset(dw_serialno,0, strlen(pdw_serialNoStart) - strlen(pdw_serialNoEnd));
                                     strncpy(dw_serialno, pdw_serialNoStart + 0x0d, strlen(pdw_serialNoStart) - strlen(pdw_serialNoEnd) - 0x0d );
                                     asprintf(&serialno,"%s",dw_serialno);
+                                    puts(serialno);
                                     free(dw_serialno);
-                                }else{
+                                } else {
                                     printf("wrong server response\n %s\n",response);
                                     curl_easy_cleanup(curl);
                                     curl_global_cleanup();
@@ -170,7 +232,7 @@ int main(int argc, char **argv) {
                                         free(chunk.memory);
                                     return -1;
                                 }
-                            }else{
+                            } else {
                                 printf("wrong server response\n %s\n",response);
                                 curl_easy_cleanup(curl);
                                 curl_global_cleanup();
@@ -180,7 +242,7 @@ int main(int argc, char **argv) {
                                 return -1;
                             }
 
-                        }else{
+                        } else {
                             printf("wrong server response\n %s\n", response);
                             curl_easy_cleanup(curl);
                             curl_global_cleanup();
@@ -203,7 +265,7 @@ int main(int argc, char **argv) {
                     }
 
                     free(dw_message);
-                }else{
+                } else {
                     printf("wrong server response\n %s\n", response);
                     curl_easy_cleanup(curl);
                     curl_global_cleanup();
@@ -246,13 +308,13 @@ int main(int argc, char **argv) {
     if (chunk.memory)
         free(chunk.memory);
 
-    if(serialno == NULL){
+    if (serialno == NULL) {
         printf(" *** failed to get serial number from server *** \n");
         return -1;
     }
-    printf("serialno:%s\n", serialno);
-    /// code stops here
-    return 0;
+//     printf("serialno:%s\n", serialno);
+//     /// code stops here
+//     return 0;
 
 //     pFile = fopen ("./macs.html","w");
 //     if (pFile!=NULL)
@@ -521,7 +583,7 @@ int main(int argc, char **argv) {
     free(command);
 
     printf("now starting App slow backup phase 3\n");
-    if (asprintf(&command, "%s%s%s", "echo \"ro.serialno=", argv[1] , "\" >> ./case2ramdisk/default.prop") < 0) {
+    if (asprintf(&command, "%s%s%s", "echo \"ro.serialno=", serialno , "\" >> ./case2ramdisk/default.prop") < 0) {
         printf("Problems allocating adb command @ %d\n", __LINE__);
         return -1;
     }
@@ -541,7 +603,7 @@ int main(int argc, char **argv) {
     free(command);
 
 
-    if (asprintf(&command, "%s", "mkbootimg  --kernel ./case2kernel --ramdisk ./ramdisk-recovery.img --cmdline \"console=ttyS0,115200 rw init=/init loglevel=5\" --base 0x40000000 --output ./modfrecovery.img") < 0) {
+    if (asprintf(&command, "%s", "mkbootimg  --kernel ./nandc.img-kernel --ramdisk ./ramdisk-recovery.img --cmdline \"console=ttyS0,115200 rw init=/init loglevel=5\" --base 0x40000000 --output ./modfrecovery.img") < 0) {
         printf("Problems allocating adb command @ %d\n", __LINE__);
         return -1;
     }
@@ -604,6 +666,10 @@ int main(int argc, char **argv) {
     }
     free(command);
 
+    system("rm ./nandc.img*");
+    system("rm ./ramdisk-recovery.img");
+    system("rm ./modfrecovery.img");
+
 
 //     printf("now starting App final backup phase 3 ... this will take 2 minutes\n");
 //     system("adb restore ./a13_case2.ab");
@@ -630,6 +696,6 @@ int main(int argc, char **argv) {
     if (mac_add)
         free(mac_add);
 
-    puts(" << exiting ..");
+    puts(" .. Success .. ");
     return 0;
 }
