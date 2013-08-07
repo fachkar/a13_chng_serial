@@ -115,6 +115,32 @@ WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp)
     return realsize;
 }
 
+static int query_ttyUSB(char * command)
+{
+    int ret = -1;
+    FILE *fpipe = NULL;
+    char line[256];
+
+    if(command == NULL)
+        return ret;
+    memset(line,0, sizeof line);
+    if ( !(fpipe = (FILE*)popen(command,"r")) )
+    {  // If fpipe is NULL
+        ret = -1;
+        return ret;
+    }
+
+    ret =0;
+    while ( fgets( line, sizeof line, fpipe))
+    {
+        ret++;
+    }
+    pclose(fpipe);
+
+    return ret;
+}
+
+
 int main(int argc, char **argv) {
     puts(" >> starting ..");
 
@@ -130,6 +156,15 @@ int main(int argc, char **argv) {
 
     chunk.memory = (char*)malloc(1);
     chunk.size = 0;
+    if (asprintf(&command, "ls %s*", "/dev/ttyUSB") < 0) {
+        printf("Problems allocating adb command @ %d\n", __LINE__);
+        return -1;
+    }
+    int nttyUSB = query_ttyUSB(command);
+    printf("nttyUSB:%d\n", nttyUSB);
+    if(command)
+        free(command);
+    return 0;
 
     system("adb shell 'echo \"halt\" > /sys/power/wake_lock'");
 
@@ -593,7 +628,7 @@ int main(int argc, char **argv) {
     free(command);
 
 
-    if (asprintf(&command, "%s", "mkbootfs ./case2ramdisk | minigzip > ./ramdisk-recovery.img") < 0) {
+    if (asprintf(&command, "%s", "../../../host/linux-x86/bin/mkbootfs ./case2ramdisk | minigzip > ./ramdisk-recovery.img") < 0) {
         printf("Problems allocating adb command @ %d\n", __LINE__);
         return -1;
     }
@@ -603,7 +638,7 @@ int main(int argc, char **argv) {
     free(command);
 
 
-    if (asprintf(&command, "%s", "mkbootimg  --kernel ./nandc.img-kernel --ramdisk ./ramdisk-recovery.img --cmdline \"console=ttyS0,115200 rw init=/init loglevel=5\" --base 0x40000000 --output ./modfrecovery.img") < 0) {
+    if (asprintf(&command, "%s", "../../../host/linux-x86/bin/mkbootimg  --kernel ./nandc.img-kernel --ramdisk ./ramdisk-recovery.img --cmdline \"console=ttyS0,115200 rw init=/init loglevel=5\" --base 0x40000000 --output ./modfrecovery.img") < 0) {
         printf("Problems allocating adb command @ %d\n", __LINE__);
         return -1;
     }
